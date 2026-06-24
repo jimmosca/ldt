@@ -32,8 +32,10 @@ into the sections below; **Verify is a hard rule.**
   deciding.
 - **Plan** — decide where the change lands relative to the extraction port line (above =
   orchestration/CLI; below = adapter internals) and whether it stays inside the closed
-  masking set / manifest core. *The **Plan** stage ≠ `ldt plan` the command, which is a
-  runtime cost-safety preview an operator runs.*
+  masking set / manifest core. Stress-test the plan against the ADRs + `CONTEXT.md` with the
+  `grill-with-docs` skill. **Plan ends in an approved plan before Implement** — ExitPlanMode in
+  an interactive session, or the plan posted to the issue for AFK work. *The **Plan** stage ≠
+  `ldt plan` the command, which is a runtime cost-safety preview an operator runs.*
 - **Implement** — build it per **Stack & commands**, keeping Athena specifics below the port
   and masking table-driven.
 - **Verify** — **a change is not done until it is tested and checked** (lint + tests over the
@@ -41,6 +43,9 @@ into the sections below; **Verify is a hard rule.**
   and is tracked in [#11](https://github.com/jimmosca/ldt/issues/11). Until it lands: never
   report a change verified against an empty or absent test suite — state what you ran, or that
   nothing exists to run yet.
+
+The loop opens and closes on its GitHub issue — `ready-for-agent` in, evidence + relabel out.
+See **Agent skills → issue tracker** for the intake/output adapter and label state-machine.
 
 ## Hard invariants (do not break)
 

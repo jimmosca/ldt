@@ -2,6 +2,15 @@
 
 Issues and PRDs for this repo live as GitHub issues in `jimmosca/ldt`. Use the `gh` CLI for all operations.
 
+## The RPIV loop's intake/output adapter
+
+This is where the RPIV loop (see [`CLAUDE.md`](../../CLAUDE.md)) touches GitHub — it bookends the loop.
+
+- **Intake (loop opens).** Pick up issues labelled `ready-for-agent` (fully specified, AFK-ready — see [`triage-labels.md`](triage-labels.md)); fetch with `gh issue view <n> --comments`. As part of Research, identify the hard invariant(s) the change touches.
+- **Close-out (loop exits).** Post the Verify evidence via `gh issue comment <n>`, then relabel/close. Evidence differs by mode: a **builder** change → the offline test/lint results; an **operator** run (`ldt pull`) → the `reports/<run_id>.md` summary + the manifest masking proof (applied-per-column claim + adapter `generated_sql`).
+- **Label state-machine.** `needs-triage` → (`needs-info` if blocked on the reporter) → `ready-for-agent` (agent picks up) → `ready-for-human` (offline-green but needs a human for the gated-live tier or a security-surface review) → close. `wontfix` is terminal.
+- **ADR-conflict escape hatch.** If the change would contradict an Accepted ADR (new masking semantics, a port-shape or manifest-core change, treating PRs as intake), do **not** close — propose a new ADR on the issue instead. See [`domain.md`](domain.md) ("Flag ADR conflicts").
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
