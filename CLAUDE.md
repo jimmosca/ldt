@@ -20,6 +20,28 @@ AWS creds → ldt CLI → Glue Catalog → [ extraction port → Athena UNLOAD a
 Greenfield. No code yet — the PRD (GitHub issue #1) and the seven ADRs define the MVP. As modules
 land, update the **commands** and **module layout** sections below with reality.
 
+## Working the loop: RPIV
+
+Every change moves through **Research → Plan → Implement → Verify**. The first three point
+into the sections below; **Verify is a hard rule.**
+
+- **Research** — read the ticket, find the seam, load the governing ADR, the `CONTEXT.md`
+  term, and the **Hard invariants** the change touches (see **Agent skills** → domain docs +
+  issue tracker). When a specific aspect needs clarifying — an unfamiliar AWS behaviour, a
+  library contract, the state of the art — **spin up a subagent to research it** before
+  deciding.
+- **Plan** — decide where the change lands relative to the extraction port line (above =
+  orchestration/CLI; below = adapter internals) and whether it stays inside the closed
+  masking set / manifest core. *The **Plan** stage ≠ `ldt plan` the command, which is a
+  runtime cost-safety preview an operator runs.*
+- **Implement** — build it per **Stack & commands**, keeping Athena specifics below the port
+  and masking table-driven.
+- **Verify** — **a change is not done until it is tested and checked** (lint + tests over the
+  affected parts). The concrete runbook is **not yet defined** — greenfield, no toolchain —
+  and is tracked in [#11](https://github.com/jimmosca/ldt/issues/11). Until it lands: never
+  report a change verified against an empty or absent test suite — state what you ran, or that
+  nothing exists to run yet.
+
 ## Hard invariants (do not break)
 
 One-line rule each; the linked ADR owns the rationale — **read it before touching the behaviour.**
