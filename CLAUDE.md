@@ -1,93 +1,79 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Status
-
-Greenfield. No code yet — the repository is empty. The MVP spec lives in the original `/init` handoff and is summarized below; treat it as the source of truth until code exists. As modules land, update this file with the real commands.
+Operational guidance for Claude Code working in this repo. **This file points; it does not
+duplicate.** Architecture lives in [`docs/adr/`](docs/adr/) (authoritative — where this file and
+an ADR disagree, the ADR wins). Domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md). Read those
+for the *why* and the *what*; this file is the *how to operate*.
 
 ## What this is
 
-**Local Data Twin (`ldt`)** — a local CLI that builds a reproducible, governed local test environment from corporate tables registered in **AWS Glue Catalog** and stored in **S3**, regardless of whether the physical format is **Delta Lake** or **Apache Iceberg**.
-
-Product line: *"Generate a local, safe, reproducible data environment using your AWS credentials and respecting the corporate catalog."*
-
-## The one architectural decision that drives everything
-
-**All extraction goes through Athena `UNLOAD` → S3 staging → local sync.** The CLI must **never** read productive data directly from S3 (e.g. `s3://production-lake/...`). It reads only the exported result in a controlled staging zone:
+**Local Data Twin (`ldt`)** — a local CLI that builds a reproducible, governed local test
+environment from corporate tables in **AWS Glue Catalog** / **S3**, whether the physical format is
+**Delta** or **Iceberg**. Pattern: **Governed Extract Local Twin** (see [`CONTEXT.md`](CONTEXT.md)).
 
 ```
-s3://<staging-bucket>/users/<aws_identity>/<project>/<run_id>/<dataset>/
+AWS creds → ldt CLI → Glue Catalog → [ extraction port → Athena UNLOAD adapter ] → S3 staging → local sync → Parquet + DuckDB views + manifest
 ```
 
-This is what makes the tool format-agnostic (Athena abstracts Delta vs Iceberg), governed (respects Glue + corporate permissions), and low-exfiltration-risk. Do **not** introduce local Delta/Iceberg readers — that path is explicitly out of scope for the MVP and would defeat the security model.
+## Status
 
-This pattern is called **Governed Extract Local Twin**. Full flow:
+Greenfield. No code yet — the PRD (GitHub issue #1) and the seven ADRs define the MVP. As modules
+land, update the **commands** and **module layout** sections below with reality.
 
-```
-AWS user credentials → ldt CLI → Glue Catalog → Athena UNLOAD → S3 staging → local sync → Parquet + DuckDB + manifest
-```
+## Hard invariants (do not break)
 
-## Hard invariants (do not break these)
+One-line rule each; the linked ADR owns the rationale — **read it before touching the behaviour.**
 
-- No direct read of productive S3 paths from local. Only Athena `UNLOAD` output.
-- No writes to source tables. The tool only needs read on Glue metadata + Athena query + read/write on its **own** result/staging buckets.
-- Every dataset must have a `where` or a `limit` (cost guardrail — an unfiltered `UNLOAD` can scan the whole table).
-- Masking is applied **inside the generated SQL** (the `UNLOAD` SELECT), never after download — so sensitive values never land locally unmasked.
-- The `manifest.json` must capture enough to reproduce/audit a sample (identity, query params, columns, masking, paths, status).
+- **No productive-S3 reads** — only the staging prefix is read, enforced by construction + a staging-only read test. ([ADR-0001](docs/adr/0001-extraction-behind-coarse-engine-agnostic-port.md), [ADR-0007](docs/adr/0007-least-privilege-iam-documented-not-required.md))
+- **No writes to source tables** — Glue read + Athena query + read/write on the tool's own staging prefix only; deny-by-absence. ([ADR-0007](docs/adr/0007-least-privilege-iam-documented-not-required.md))
+- **Masked before it lands locally** — fail-closed (unsatisfiable rule aborts the whole dataset), closed table-driven type set, no user SQL. ([ADR-0003](docs/adr/0003-fail-closed-masking-closed-type-set.md))
+- **Extraction stays behind the coarse port** — `extract(spec) -> LocalDataset`; Athena specifics never leak above the port line. ([ADR-0001](docs/adr/0001-extraction-behind-coarse-engine-agnostic-port.md), [ADR-0002](docs/adr/0002-athena-unload-sole-mvp-adapter.md))
+- **Layered cost guardrail** — `where`/`limit` friction floor (not a ceiling) + bytes-scanned cutoff + `plan`-time partition-prune warning. ([ADR-0004](docs/adr/0004-cost-guardrail-where-limit-and-bytes-scanned.md))
+- **Two-layer manifest** — engine-neutral core + namespaced adapter block; never contains credentials. ([ADR-0005](docs/adr/0005-two-layer-manifest.md))
+- **DuckDB = disposable views over Parquet** — Parquet is the single source of truth. ([ADR-0006](docs/adr/0006-duckdb-views-over-parquet.md))
 
 ## CLI surface
 
-Five commands. `pull` is the orchestrator.
+Five commands. `pull` is the orchestrator; `plan` before `pull` is the core safety affordance —
+keep it cheap and side-effect-free.
 
 | Command | Job |
 |---|---|
 | `ldt init` | Scaffold `local-data-twin.yml` + `.data/` |
-| `ldt validate -c <cfg>` | Check YAML, AWS creds, region, Glue db/tables/columns exist, staging bucket accessible, Athena workgroup usable |
-| `ldt plan -c <cfg>` | Print what would run (datasets, columns, filters, limits, masking) — **no AWS calls that cost money** |
-| `ldt pull -c <cfg>` | Resolve identity → query Glue → generate `UNLOAD` SQL → run Athena → wait → download Parquet → register DuckDB views → write manifest → write report |
+| `ldt validate -c <cfg>` | Check YAML, AWS creds, region, Glue db/tables/columns, staging bucket, Athena workgroup |
+| `ldt plan -c <cfg>` | Print what would run — **no chargeable AWS calls** |
+| `ldt pull -c <cfg>` | identity → Glue → masking/columns → extraction port → S3 sync → DuckDB views → manifest → report |
 | `ldt open` | Open DuckDB CLI / print connection instructions |
 
-`plan` before `pull` is a core safety affordance — keep it cheap and side-effect-free.
+The `pull` ordering is a contract: masking/column choices are decided **before** anything touches
+S3 or local disk, then baked into the adapter's SQL.
 
-## Intended module layout & responsibilities
+## Intended module layout
 
-Package `local_data_twin/`:
+Package `local_data_twin/`. The port/adapter seam ([ADR-0001](docs/adr/0001-extraction-behind-coarse-engine-agnostic-port.md)/[0002](docs/adr/0002-athena-unload-sole-mvp-adapter.md))
+is fixed; names finalise during implementation.
 
-- `cli.py` — Typer commands (`init/validate/plan/pull/open`)
-- `config.py` — load YAML, validate with **Pydantic**
-- `aws_identity.py` — resolve profile/region/account/role (supports `AWS_PROFILE`, SSO, SDK default chain, optional `AssumeRole`)
-- `glue_catalog.py` — `get_table`/`list_tables`, validate requested columns against schema
-- `athena_export.py` — build `UNLOAD` SQL, run query, poll to completion
-- `s3_sync.py` — download Parquet from staging to `.data/lake/<dataset>/`, optional cleanup
-- `duckdb_register.py` — create `.data/local.duckdb`, one view per dataset over `read_parquet(...)`
-- `masking.py` — translate declarative masking rules → SQL expressions
-- `manifest.py` — write `manifests/<run_id>.json`
-- `report.py` — write `reports/<run_id>.md`
+| Module | Responsibility |
+|---|---|
+| `cli.py` | Typer commands |
+| `config.py` | YAML load + Pydantic validation (closed masking enum here) |
+| `aws_identity.py` | resolve profile/region/account/role (+ optional AssumeRole) |
+| `glue_catalog.py` | table/column/partition metadata + column validation |
+| `extract.py` | the coarse extraction **port** |
+| `athena_export.py` | the Athena **adapter**: build `UNLOAD` SQL, run, poll |
+| `s3_sync.py` | download Parquet from staging (staging-only reads), optional cleanup |
+| `duckdb_register.py` | one view per dataset over `read_parquet(...)` |
+| `masking.py` | table-driven masking rules → SQL expressions |
+| `manifest.py` | write `manifests/<run_id>.json` (core + adapter block) |
+| `report.py` | write `reports/<run_id>.md` |
 
-The `pull` flow ordering above is a contract — masking/columns are decided in `glue_catalog` + `masking` and baked into SQL by `athena_export` before anything touches S3 or local disk.
+## Config & output
 
-## Config & generated SQL contract
-
-Config keys: `project`, `aws` (profile/region/workgroup/assume_role_arn), `catalog` (glue + database), `staging` (bucket/prefix_template/cleanup_after_download), `local` (path/duckdb_path/lake_path), `datasets[]`.
-
-Per-dataset sampling: `columns` (explicit), `where`, `order_by`, `limit`. Masking maps a column → one of: `hash`, `null`, `constant`, `date_bucket_month`.
-
-`hash` → `sha256(CAST(<col> AS varchar)) AS <col>`. Generated query shape:
-
-```sql
-UNLOAD (
-  SELECT order_id, sha256(CAST(customer_id AS varchar)) AS customer_id, order_date, region, amount, status
-  FROM analytics_silver.orders
-  WHERE order_date >= DATE '2026-01-01'
-  ORDER BY order_date DESC
-  LIMIT 100000
-)
-TO 's3://.../users/<identity>/<project>/<run_id>/orders/'
-WITH (format = 'PARQUET', compression = 'SNAPPY');
-```
-
-Local output after `pull`:
+Config keys: `project`, `aws` (profile/region/workgroup/assume_role_arn), `catalog` (glue +
+database), `staging` (bucket/prefix_template/cleanup_after_download), `local`
+(path/duckdb_path/lake_path), `datasets[]` (per-dataset: `columns`, `where`, `order_by`, `limit`,
+column→masking map). The generated `UNLOAD` SQL shape is an adapter detail — see
+[ADR-0002](docs/adr/0002-athena-unload-sole-mvp-adapter.md).
 
 ```
 .data/
@@ -97,19 +83,34 @@ Local output after `pull`:
   reports/<run_id>.md
 ```
 
-## Recommended stack
+## Stack & commands
 
-Python · Typer (CLI) · Pydantic (config) · boto3 (AWS) · duckdb · PyYAML/ruamel.yaml · Rich (output). Tooling: **uv** for env, **pytest** for tests.
+Python · Typer · Pydantic · boto3 · duckdb · PyYAML/ruamel.yaml · Rich. Tooling: **uv**, **pytest**.
 
-Once set up, expected commands will be roughly:
 - Install: `uv sync`
-- Run CLI: `uv run ldt <command>` (or install as console_script entry point)
-- Tests: `uv run pytest` / single test: `uv run pytest tests/test_x.py::test_name`
+- Run CLI: `uv run ldt <command>`
+- Tests: `uv run pytest` / single: `uv run pytest tests/test_x.py::test_name`
 
-Testing note from the spec: moto/localstack only if it pays off; for Athena/Glue, controlled integration tests are likely more realistic than mocks.
+Testing note: moto/localstack only if it pays off; for Athena/Glue, controlled integration tests
+beat mocks. Test seams are fixed in the PRD (CLI↔fake-adapter integration; pure SQL-builder unit;
+gated live integration).
 
 ## Scope boundaries (MVP)
 
-Out of scope — do not build these without an explicit ask: local Delta/Iceberg readers, CDC, incremental sync, write-back to S3, entity-graph sampling, UI portal, DataHub, multi-cloud, editing source tables, full Lake Formation management, production-equivalence guarantees.
+Out of scope without an explicit ask: local Delta/Iceberg readers, direct prod-S3 reads, CDC,
+incremental sync, write-back to S3, entity-graph sampling, UI portal, DataHub, multi-cloud,
+editing source tables, full Lake Formation management, production-equivalence guarantees.
 
-Framing: the local environment is **"production-shaped," not "production-equivalent."** DuckDB-over-Parquet does not reproduce Athena/Spark/Delta/Iceberg semantics exactly.
+## Agent skills
+
+### Issue tracker
+
+GitHub issues in `jimmosca/ldt` via the `gh` CLI. External PRs are **not** a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: [`CONTEXT.md`](CONTEXT.md) + [`docs/adr/`](docs/adr/) at the repo root. See `docs/agents/domain.md`.
